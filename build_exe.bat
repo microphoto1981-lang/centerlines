@@ -39,6 +39,7 @@ echo.
 echo Only CENTERLINES.exe is required on the target PC.
 echo DXF files are selected through the GUI.
 echo.
+if defined CI exit /b 0
 pause
 exit /b 0
 
@@ -49,5 +50,6 @@ echo BUILD ERROR
 echo ========================================
 echo See the message above.
 echo.
+if defined CI exit /b 1
 pause
 exit /b 1
