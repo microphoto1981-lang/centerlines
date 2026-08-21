@@ -1,0 +1,68 @@
+--- orig/ifc_writer.py	2026-08-20 20:54:32.000000000 +0000
++++ proj/ifc_writer.py	2026-08-20 21:10:55.820294105 +0000
+@@ -22,10 +22,23 @@
+     def profile_rect(self,name,w,d):
+         return self.add(f"IFCRECTANGLEPROFILEDEF(.AREA.,'{name}',{self.R(self.a2(self.p2(0,0),self.d2(1,0)))},{w:.6f},{d:.6f})")
+     def profile_wall(self,length,thickness):
+-        # Wall length is measured from the actual axis start point.
+-        # Thickness is centered by IFC material layer usage, not by shifting
+-        # the longitudinal axis.
+-        pos = self.a2(self.p2(0,0),self.d2(1,0))
++        # IFC RULE (IfcRectangleProfileDef):
++        #   the rectangle is ALWAYS centred on its own Position origin, i.e.
++        #   it spans [-XDim/2 .. +XDim/2] x [-YDim/2 .. +YDim/2].
++        #
++        # The wall LocalPlacement origin is the real axis start point A and
++        # the local X axis points from A to B. Therefore a profile positioned
++        # at (0,0) would make the wall run from A-L/2 to A+L/2 - the wall
++        # would be built around the MIDPOINT of A-B. That is the source of the
++        # horizontal wall offset (L-junction turning into a cross).
++        #
++        # Fix: shift the profile position by +L/2 along the local X axis only.
++        # Result:
++        #   local X : 0 .. L        -> length starts exactly at A, ends at B
++        #   local Y : -T/2 .. +T/2  -> thickness stays symmetric about the axis
++        # No offset is applied across the axis, and the point order A->B is
++        # never changed.
++        pos = self.a2(self.p2(length/2.0,0.0),self.d2(1,0))
+         return self.add(
+             f"IFCRECTANGLEPROFILEDEF(.AREA.,'SCADPARAMPROF_WALL',"
+             f"{self.R(pos)},{length:.6f},{thickness:.6f})"
+@@ -57,6 +70,8 @@
+         site_lp=self.lp(None,ax); site=self.add(f"IFCSITE('{guid()}',{self.R(own)},'Site',$,$,{self.R(site_lp)},$,$,.ELEMENT.,$,$,0.,$,$)")
+         b_lp=self.lp(site_lp,ax); bld=self.add(f"IFCBUILDING('{guid()}',{self.R(own)},'Building',$,$,{self.R(b_lp)},$,$,.ELEMENT.,$,$,$)")
+         self.owner=own; self.building=bld; self.building_lp=b_lp
++        # Single shared material for wall layer sets (IfcMaterialLayer.Material).
++        self.material=self.add("IFCMATERIAL('Concrete')")
+         self.add(f"IFCRELAGGREGATES('{guid()}',{self.R(own)},'SiteContainer','',{self.R(site)},({self.R(bld)}))")
+         self.add(f"IFCRELAGGREGATES('{guid()}',{self.R(own)},'ProjectContainer','',{self.R(proj)},({self.R(site)}))")
+     def storey(self,f):
+@@ -79,7 +94,10 @@
+         L=math.hypot(x2-x1,y2-y1)
+         if L<1e-9:return None
+         t=max(.001,float(w.get("thickness",.2))); z0=f["z"]; h=max(.001,w.get("z2",z0+3)-w.get("z1",z0))
+-        prof=self.profile_rect("SCADPARAMPROF_WALL",L,t)
++        # profile_wall() puts the rectangle at local X 0..L (start at A),
++        # local Y -T/2..+T/2 (thickness centred on the axis).
++        # profile_rect() must NOT be used here: it centres the length too.
++        prof=self.profile_wall(L,t)
+         solid=self.solid(prof,h,self.d3(0,0,1),self.p3(0,0,w.get("z1",z0)-z0))
+         # add Axis representation like Forum export
+         axline=self.add(f"IFCPOLYLINE(({self.R(self.p2(0,0))},{self.R(self.p2(L,0))}))")
+@@ -89,9 +107,14 @@
+         ang=math.atan2(y2-y1,x2-x1)
+         loc=self.lp(storey_lp,self.a3(self.p3(x1,y1,0),self.d3(0,0,1),self.d3(math.cos(ang),math.sin(ang),0)))
+         obj=self.add("IFCWALLSTANDARDCASE('%s',%s,'Wall %s','',$,%s,%s,'%s',$)" % (guid(),self.R(self.owner),w['id'],self.R(loc),self.R(shp),guid()))
+-        layer=self.add(f"IFCMATERIALLAYER($,{t:.6f},.U.,$,$,$,$)")
++        layer=self.add(f"IFCMATERIALLAYER({self.R(self.material)},{t:.6f},.U.,$,$,$,$)")
+         ls=self.add(f"IFCMATERIALLAYERSET(({self.R(layer)}),'','')")
+-        use=self.add(f"IFCMATERIALLAYERSETUSAGE({self.R(ls)},.AXIS1.,.POSITIVE.,{-t/2:.6f},$ )")
++        # LayerSetDirection for a wall is .AXIS2. (across the wall = local Y).
++        # .AXIS1. means "along the wall length" and makes importers offset the
++        # wall along its own axis by OffsetFromReferenceLine.
++        # OffsetFromReferenceLine = -T/2 with .POSITIVE. sense gives a layer
++        # running -T/2 .. +T/2, i.e. symmetric about the centre line.
++        use=self.add(f"IFCMATERIALLAYERSETUSAGE({self.R(ls)},.AXIS2.,.POSITIVE.,{-t/2:.6f},$)")
+         self.add(f"IFCRELASSOCIATESMATERIAL('{guid()}',{self.R(self.owner)},$,$,({self.R(obj)}),{self.R(use)})")
+         return obj
+     def slab(self,p,f,storey_lp):
